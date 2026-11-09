@@ -16,8 +16,10 @@
 import type { BotStatus, LifecycleEvent, Act, TranscriptSegment } from './contracts.js';
 
 /** The outcome of the join+admission attempt (an Anti-Corruption verdict, P5 — the
- *  platform's many failure modes translated into the bot's vocabulary). */
-export type JoinOutcome = 'admitted' | 'rejected' | 'timeout' | 'blocked' | 'auth_missing' | 'error';
+ *  platform's many failure modes translated into the bot's vocabulary). `refused`: the platform
+ *  itself refused the join before any host saw a request, and refuses every bot the same way (a
+ *  Google Meet meeting that does not admit guests joining from a browser). */
+export type JoinOutcome = 'admitted' | 'rejected' | 'refused' | 'timeout' | 'blocked' | 'auth_missing' | 'error';
 
 /** A join verdict that CARRIES its human reason text. A non-admitted platform failure is born with
  *  a message (the @vexa/join AdmissionError text: "auth_required: …", "host did not start …") — but

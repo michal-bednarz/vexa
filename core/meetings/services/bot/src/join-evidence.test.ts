@@ -270,7 +270,7 @@ check(
 );
 check(
   'a meeting that does not admit browser guests: platform_join_refused, exogenous',
-  classifyJoinFailure('rejected', { reachedLobby: false, detail: 'Google Meet refused the join: this meeting does not admit guests joining from a browser (ResolveMeetingSpace answered HTTP 403: The requester cannot resolve this meeting due to the client they are joining from); the host never received a request to admit the bot' }) === 'platform_join_refused'
+  classifyJoinFailure('refused', { reachedLobby: false, detail: 'Google Meet refused the join: this meeting does not admit guests joining from a browser (ResolveMeetingSpace answered HTTP 403: The requester cannot resolve this meeting due to the client they are joining from); the host never received a request to admit the bot' }) === 'platform_join_refused'
     && attributeJoinFailure('platform_join_refused', 'Google Meet refused the join: this meeting does not admit guests joining from a browser (ResolveMeetingSpace answered HTTP 403: The requester cannot resolve this meeting due to the client they are joining from); the host never received a request to admit the bot') === 'exogenous_platform',
 );
 check(
@@ -391,7 +391,14 @@ type Fixture = {
   expectReason: JoinFailureReason;
   expectAttribution: JoinFailureAttribution;
   expectStage: 'requested' | 'joining' | 'awaiting_admission';
+  expectCompletion?: LifecycleEvent['completion_reason'];
 };
+
+const GUEST_BLOCKED_TEXT = 'Google Meet refused the join: this meeting does not admit guests joining from a browser ' +
+  '(ResolveMeetingSpace answered HTTP 403: The requester cannot resolve this meeting due to the client they are joining from); ' +
+  'the host never received a request to admit the bot';
+const MEET_REFUSED_TEXT = 'google_meet_join_refused: Google Meet refused the join on 5 of 5 knocks ' +
+  '(CreateMeetingDevice answered HTTP 403: The caller does not have permission); the host never received a request to admit the bot';
 
 const FIXTURES: Fixture[] = [
   {
@@ -469,6 +476,30 @@ const FIXTURES: Fixture[] = [
     expectAttribution: 'system_fault',
     expectStage: 'joining',
   },
+  {
+    // A Meet room that admits only its creator's app (bbb, 4 Nov 2026): refused on knock 1, no host asked.
+    name: 'meet-guest-blocked',
+    driver: replayJoin({
+      result: { outcome: 'refused', reason: GUEST_BLOCKED_TEXT,
+                signals: { reachedLobby: false, totalMs: 6_800, lobbyBudgetMs: BUDGET_MS, detail: GUEST_BLOCKED_TEXT } },
+    }),
+    expectReason: 'platform_join_refused',
+    expectAttribution: 'exogenous_platform',
+    expectStage: 'joining',
+    expectCompletion: 'platform_join_refused',
+  },
+  {
+    // Control: Meet's other refusal keeps the host-denial wire shape meeting-api respawns on.
+    name: 'meet-refused-every-knock',
+    driver: replayJoin({
+      result: { outcome: 'rejected', reason: MEET_REFUSED_TEXT,
+                signals: { reachedLobby: false, totalMs: 41_000, lobbyBudgetMs: BUDGET_MS, detail: MEET_REFUSED_TEXT } },
+    }),
+    expectReason: 'awaiting_admission_rejected',
+    expectAttribution: 'exogenous_platform',
+    expectStage: 'joining',
+    expectCompletion: 'awaiting_admission_rejected',
+  },
 ];
 
 async function runFixtures(): Promise<void> {
@@ -488,6 +519,10 @@ async function runFixtures(): Promise<void> {
     check(`[${f.name}] attribution = ${f.expectAttribution}`,
       ev?.attribution === f.expectAttribution, `got ${ev?.attribution}`);
     check(`[${f.name}] stage = ${f.expectStage}`, ev?.stage === f.expectStage, `got ${ev?.stage}`);
+    if (f.expectCompletion) {
+      check(`[${f.name}] completion_reason = ${f.expectCompletion}`,
+        terminal.completion_reason === f.expectCompletion, `got ${terminal.completion_reason}`);
+    }
     check(`[${f.name}] a human reason text is stamped (never null)`,
       typeof terminal.reason === 'string' && terminal.reason.length > 0);
     check(`[${f.name}] the raw platform signal is preserved`,
