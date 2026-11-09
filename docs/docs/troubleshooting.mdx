@@ -118,8 +118,10 @@ usual causes:
 - **Self-host wiring** — confirm `ADMIN_API_URL` and `INTERNAL_API_SECRET` are set for
   meeting-api; without them the sync loop is disabled (and `POST /user/calendar/sync` answers
   `503`).
-- **Feed too large / unreachable / redirecting** — feeds over 2 MB, behind redirects, or resolving
-  to blocked/internal addresses are refused; the status line records which.
+- **Feed too large / unreachable / redirecting** — feeds over the size cap
+  (`CALENDAR_SYNC_MAX_ICS_BYTES`, default 32 MB, counted after decompression), behind redirects, or
+  resolving to blocked/internal addresses are refused; the status line records which. A secret iCal
+  address carries the whole calendar history, so a feed of several megabytes is normal.
 
 ## POST /bots returns 503 (transcription required)
 
