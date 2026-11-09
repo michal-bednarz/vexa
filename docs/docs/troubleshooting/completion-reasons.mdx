@@ -5,9 +5,9 @@ description: "Every reason a meeting run can end, what each one means, and whose
 
 Every meeting that reaches a terminal state carries a **`completion_reason`** — the bot's own
 account of why the run ended. The field is sealed in the `lifecycle.v1` contract and there are
-**ten values**, no more.
+**eleven values**, no more.
 
-This page is the reference for all ten. [Troubleshooting](/troubleshooting) is the companion:
+This page is the reference for all eleven. [Troubleshooting](/troubleshooting) is the companion:
 it starts from a symptom you can see and walks to a fix. Start here when a run has already
 ended and you want to know what ended it.
 
@@ -40,9 +40,9 @@ The same two fields ride the signed `meeting.completed` and `bot.failed`
 [webhooks](/webhooks) under `data.meeting`, so you can route on the reason without polling.
 `GET /meetings/{id}` carries them too.
 
-## The ten reasons
+## The eleven reasons
 
-**Whose side** is the column that matters. Two of the ten point at Vexa; the rest are your own
+**Whose side** is the column that matters. Three of the eleven point at Vexa; the rest are your own
 request, your own policy, or the ordinary friction of putting a bot into someone else's calendar.
 
 | `completion_reason` | What happened | Whose side | What to do |
@@ -52,7 +52,8 @@ request, your own policy, or the ordinary friction of putting a bot into someone
 | `startup_alone` | Nobody was in the meeting when the bot arrived, and nobody joined within the window. | **The meeting** | Check the bot was sent at the right time. Raise `no_one_joined_timeout` if your bots routinely arrive first. |
 | `evicted` | A host or participant removed the bot from the call. | **The meeting** | Nothing to fix on your side. A person in the call made this decision. |
 | `awaiting_admission_timeout` | The bot waited in the lobby and was never admitted before its budget ran out. | **The meeting** | Have someone admit the bot as they would any guest. Raise `max_wait_for_admission` if your hosts admit late. |
-| `awaiting_admission_rejected` | A host explicitly denied the bot admission. On Google Meet, a reason that starts with `google_meet_join_refused` means something else: Meet refused the guest join and no host was asked. | **The meeting**; for `google_meet_join_refused`, **the platform** | Host denial: nothing automatic, since this was an explicit decision. Ask the host to admit it next time. `google_meet_join_refused`: the bot has already re-knocked up to 3 times. Send it again later. See [A join Google Meet refuses](#a-join-google-meet-refuses-google_meet_join_refused). |
+| `awaiting_admission_rejected` | A host explicitly denied the bot admission. | **The meeting** | Nothing automatic, since this was an explicit decision. Ask the host to admit it next time. |
+| `platform_join_refused` | Google Meet refused the join itself, and no host was ever asked. | **Vexa**; when the meeting does not admit guests joining from a browser, **the meeting** | Vexa has already knocked again and sent new bots. Send it again later. If the reason text says the meeting does not admit guests joining from a browser, no retry can get in. See [A join Google Meet refuses](#a-join-google-meet-refuses-google_meet_join_refused). |
 | `join_failure` | The bot never reached the call: no admission signal ever appeared, or it died before it could join. | **Vexa** | Retry. If it repeats on one platform or one link, tell us — and read the [caveat on this value](#join_failure-is-currently-two-failures-under-one-name) first. |
 | `auth_session_missing` | The run needed a signed-in browser identity and there was no usable one — a meeting restricted to authenticated accounts, or a stored session that has died. | **Vexa, or your bot identity** | A re-spawn against a dead session cannot succeed. Self-hosting: re-provision with `make login` — see [Authenticated bots](/authenticated-bots). Hosted: tell us. |
 | `validation_error` | The request that created the run was not usable — wrong `native_meeting_id`, wrong platform value, malformed parameters. | **Yours** | Fix the request. [Bot won't join the meeting](/troubleshooting#bot-wont-join-the-meeting) lists the usual causes. |
@@ -89,8 +90,8 @@ today, not a defect you have to wait on.
 
 A run that ended in anything other than `completed` has not, by that fact, told you anything
 about whether Vexa worked. The user stopping the bot, nobody being in the room, a host declining
-it, a lobby nobody watched — these are ordinary meeting outcomes, and eight of the ten values
-above describe one. Only the reason separates them from the two that point at us, so a count of
+it, a lobby nobody watched — these are ordinary meeting outcomes, and eight of the eleven values
+above describe one. Only the reason separates them from the three that point at us, so a count of
 non-completions with the reasons thrown away is not a reliability measure of anything — ours or
 anyone's.
 
@@ -162,14 +163,26 @@ these:
 - The page shows "You can't join this video call", either while the lobby loads or right after
   **Ask to join**.
 
-Meet's refusal is intermittent: it applies to one join, and the next knock can succeed. So the bot
-knocks again by itself, up to 3 times in total and within its admission budget. If Meet refuses
-every knock, the run ends within seconds as `failed` / `awaiting_admission_rejected`. Its reason
-text (`data.reason`) starts with `google_meet_join_refused` and names the refused call or screen.
-The failure is attributed to the platform, not to the host or to Vexa.
+The reason text (`data.reason`) names the refused call or screen and quotes Meet's own message
+from the 403, for example `CreateMeetingDevice answered HTTP 403: The caller does not have
+permission`. Both cases below end the run `failed` / `platform_join_refused`:
 
-The host can't fix this, because there was nothing to admit. Send the bot again later. If one
-meeting link keeps getting refused, tell us and include the reason text. Older bots read the
+- **An intermittent refusal.** Usually Meet refuses one join, and the next knock can succeed. The
+  bot knocks again by itself within its admission budget. If Meet refuses every knock, Vexa sends a
+  new bot to the same meeting, up to 3 bots in total for a bot that is not signed in. The meeting
+  stays `joining` in between. If Meet refuses them all, the reason text starts with
+  `google_meet_join_refused` and the failure is counted as Vexa's. Send the bot again later. Meet
+  answers a meeting code that does not exist with the same 403 and the same message, so check the
+  link when one keeps getting refused.
+- **A meeting that does not admit guests joining from a browser.** Meet answers `The requester
+  cannot resolve this meeting due to the client they are joining from`, as it does for a meeting
+  whose owner admits only the app that created it. Every knock and every bot get the same answer,
+  so the bot stops at once and no new bot is sent. The run ends within seconds, its reason text
+  says the meeting does not admit guests joining from a browser, and the failure is attributed to
+  the platform. Only the meeting's own settings can change that.
+
+The host can't fix either case, because there was nothing to admit. If one meeting link keeps
+getting refused, tell us and include the reason text. Older bots read the
 refusal screen as the waiting room and reported `awaiting_admission` until
 `max_wait_for_admission` ran out.
 
@@ -199,7 +212,7 @@ yourself.
 
 If you generate a client from the gateway's OpenAPI document, its `MeetingCompletionReason` enum
 still carries `stopped_before_admission` and `stopped_with_no_audio` — 0.10-era values that the
-0.12 codebase never produces. The ten above are the live set. Generated clients should tolerate
+0.12 codebase never produces. The eleven above are the live set. Generated clients should tolerate
 the two extras rather than depend on them.
 
 ## Still stuck?
