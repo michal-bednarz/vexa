@@ -529,6 +529,16 @@ async function outcomeOf(run: Promise<unknown>, watchdogMs = 10_000): Promise<st
     const page = mockPage([]);
     page.on = (ev: string, fn: (r: any) => void) => { if (ev === 'response') listeners.push(fn); };
     watchGoogleJoinRefusal(page);
+    const body = Buffer.from(statusBody(7, 'The caller does not have permission').toString('base64'), 'latin1');
+    for (const fn of listeners) fn({ status: () => 403, url: () => 'https://meet.google.com/$rpc/google.rtc.meetings.v1.MeetingDeviceService/CreateMeetingDevice', headers: () => ({ 'x-goog-safety-encoding': 'base64' }), body: async () => body });
+    const evidence = await checkForGoogleJoinRefused(page);
+    check('a base64 safety-encoded 403 body → the evidence still carries its message', evidence === 'CreateMeetingDevice answered HTTP 403: The caller does not have permission', true, String(evidence));
+  }
+  {
+    const listeners: ((r: any) => void)[] = [];
+    const page = mockPage([]);
+    page.on = (ev: string, fn: (r: any) => void) => { if (ev === 'response') listeners.push(fn); };
+    watchGoogleJoinRefusal(page);
     for (const fn of listeners) fn({ status: () => 403, url: () => 'https://meet.google.com/$rpc/google.rtc.meetings.v1.MeetingDeviceService/CreateMeetingDevice', body: () => new Promise(() => {}) });
     const t = Date.now();
     const evidence = await checkForGoogleJoinRefused(page);

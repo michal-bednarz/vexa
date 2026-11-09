@@ -156,8 +156,11 @@ const watched = new WeakSet<object>();
 const REFUSAL_BODY_WAIT_MS = 2_000;
 
 /** The message of a 403 body. Meet answers with a protobuf google.rpc.Status: field 1 the code,
- *  field 2 the message, field 3 the error details. Returns field 2, at most 200 chars, or null. */
-export function refusalMessage(body: Buffer): string | null {
+ *  field 2 the message, field 3 the error details. Returns field 2, at most 200 chars, or null.
+ *  `encoding` is the response's x-goog-safety-encoding: Meet's $rpc calls ask for base64 "if
+ *  executable", and the same service family answers its 200s that way (meet.google.com, 9 Nov 2026). */
+export function refusalMessage(raw: Buffer, encoding?: string): string | null {
+  const body = encoding === "base64" ? Buffer.from(raw.toString("latin1"), "base64") : raw;
   let i = 0;
   const varint = (): number => {
     let value = 0;
@@ -197,8 +200,10 @@ export function watchGoogleJoinRefusal(page: Page): void {
       if (call) {
         const what = `${call.split("/")[1]} answered HTTP 403`;
         refusedCall.set(key, what);
+        const encoding = typeof (response as any).headers === "function"
+          ? response.headers()["x-goog-safety-encoding"] : undefined;
         refusedMessage.set(key, typeof (response as any).body === "function"
-          ? response.body().then(refusalMessage).catch(() => null)
+          ? response.body().then((body) => refusalMessage(body, encoding)).catch(() => null)
           : Promise.resolve(null));
         log(`🚫 Google Meet refused the join: ${what}`);
       }
