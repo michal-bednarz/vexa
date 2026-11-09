@@ -324,6 +324,13 @@ const fast = { sleep: async () => {} };
   check('no message field → null', refusalMessage(Buffer.from([0x08, 0x07])) === null);
   check('a truncated body → null, never a throw', refusalMessage(Buffer.from([0x08, 0x07, 0x12, 0x40, 0x41])) === null);
   check('not protobuf (an HTML error page) → null', refusalMessage(Buffer.from('<html>403</html>')) === null);
+  // The bytes of a ResolveMeetingSpace 403 as meet.google.com sent them to an anonymous Chrome (9 Nov
+  // 2026, a meeting code that does not exist): application/x-protobuf, no safety encoding.
+  const captured = Buffer.from('CAcSI1RoZSBjYWxsZXIgZG9lcyBub3QgaGF2ZSBwZXJtaXNzaW9u', 'base64');
+  check('a captured 403 body → its message', refusalMessage(captured) === 'The caller does not have permission', String(refusalMessage(captured)));
+  const safetyEncoded = Buffer.from(policyBody.toString('base64'), 'latin1');
+  check('x-goog-safety-encoding: base64 → decoded first', refusalMessage(safetyEncoded, 'base64') === refusalMessage(policyBody), String(refusalMessage(safetyEncoded, 'base64')));
+  check('… and unread without the header (base64 text is not a Status)', refusalMessage(safetyEncoded) === null);
 
   const blocked = () => new GoogleJoinRefusedError(`ResolveMeetingSpace answered HTTP 403: ${refusalMessage(policyBody)}`);
   {
