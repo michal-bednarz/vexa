@@ -27,6 +27,7 @@ export type CompletionReason =
   | 'evicted'
   | 'awaiting_admission_timeout'
   | 'awaiting_admission_rejected'
+  | 'platform_join_refused'
   | 'join_failure'
   | 'auth_session_missing'
   | 'validation_error'

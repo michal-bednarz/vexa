@@ -7,8 +7,8 @@
  *
  * Run: tsx src/join-driver.test.ts
  */
-import { AdmissionError, AuthSessionError, TeamsJoinRedirectError, TEAMS_AUTH_REDIRECT } from '@vexa/join';
-import { admissionOutcomeToJoinOutcome, wantsIncomingVideoOff } from './join-driver.js';
+import { AdmissionError, AuthSessionError, GoogleJoinRefusedError, TeamsJoinRedirectError, TEAMS_AUTH_REDIRECT } from '@vexa/join';
+import { admissionErrorToJoinOutcome, admissionOutcomeToJoinOutcome, wantsIncomingVideoOff } from './join-driver.js';
 import type { JoinOutcome } from './ports.js';
 
 let passed = 0, failed = 0;
@@ -18,9 +18,9 @@ const check = (name: string, cond: boolean) => {
 };
 
 // JoinOutcomes the orchestrator (OUTCOME_FAIL) + retry.py treat as PERMANENT (no retry):
-// 'rejected' → awaiting_admission_rejected. Transient (retried): 'timeout' → awaiting_admission_timeout,
-// 'error'/'blocked' → join_failure.
-const PERMANENT_OUTCOMES = new Set<JoinOutcome>(['rejected', 'auth_missing']);
+// 'rejected' → awaiting_admission_rejected, 'refused' → platform_join_refused. Transient (retried):
+// 'timeout' → awaiting_admission_timeout, 'error'/'blocked' → join_failure.
+const PERMANENT_OUTCOMES = new Set<JoinOutcome>(['rejected', 'refused', 'auth_missing']);
 
 console.log('\n=== join-driver: AdmissionError outcome → JoinOutcome (G1) ===');
 
@@ -45,6 +45,18 @@ const authMapped = admissionOutcomeToJoinOutcome(authErr.outcome);
 check('AuthSessionError.outcome maps to auth_missing', authMapped === 'auth_missing');
 check('a missing auth session is PERMANENT (not a retried join_failure)', PERMANENT_OUTCOMES.has(authMapped));
 check('auth failure does NOT map to the transient/retried classes', authMapped !== 'error' && authMapped !== 'timeout');
+
+// Google Meet refusing the join before any host was asked. A meeting that does not admit browser
+// guests refuses every bot → `refused` (→ platform_join_refused, no new pod); Meet's other refusal
+// stays `rejected`, the shape meeting-api starts a new pod on.
+const guestBlocked = new GoogleJoinRefusedError(
+  'ResolveMeetingSpace answered HTTP 403: The requester cannot resolve this meeting due to the client they are joining from');
+check('a guest-blocked Meet refusal → refused', admissionErrorToJoinOutcome(guestBlocked) === 'refused');
+check('… a refusal is PERMANENT', PERMANENT_OUTCOMES.has(admissionErrorToJoinOutcome(guestBlocked)));
+const flaky = new GoogleJoinRefusedError('CreateMeetingDevice answered HTTP 403: The caller does not have permission', 5);
+check('Meet\'s other refusal stays rejected (meeting-api respawns it)', admissionErrorToJoinOutcome(flaky) === 'rejected');
+check('a host denial stays rejected', admissionErrorToJoinOutcome(denial) === 'rejected');
+check('a signed-out profile stays auth_missing', admissionErrorToJoinOutcome(authErr) === 'auth_missing');
 
 // The Teams sign-in-redirect terminal (#915) takes the OTHER branch on purpose: it is NOT an
 // AdmissionError, so the driver re-raises it and the orchestrator's join catch stamps

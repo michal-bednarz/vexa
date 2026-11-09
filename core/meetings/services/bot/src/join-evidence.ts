@@ -56,8 +56,9 @@ export type JoinFailureReason =
   | 'ui_locale_mismatch'
   /** The USER stopped the run while the bot was still knocking. Not a failure. */
   | 'stopped_while_joining'
-  /** The platform refused every bot pod before a host saw a request (Google Meet's 403). Typed by
-   *  meeting-api on the meeting's final refusal (lifecycle/meet_respawn.py); the bot does not emit it. */
+  /** The platform refused the join before a host saw a request (Google Meet's 403). Typed by
+   *  meeting-api when Meet refused every bot pod (lifecycle/meet_respawn.py), and by the bot itself
+   *  when the meeting does not admit browser guests (`refused`), where no new pod is started. */
   | 'platform_join_refused'
   /** The signals do not support a verdict. `detail` carries what was observed. */
   | 'unknown';
@@ -224,7 +225,7 @@ export function classifyJoinFailure(
 
     // Meet refusing a meeting that does not admit browser guests: the platform's refusal, typed here
     // because meeting-api never sees GOOGLE_JOIN_REFUSED on it (no new pod is worth starting).
-    if (outcome === 'rejected' && matches(detail, GUEST_BLOCKED_MARKERS)) return 'platform_join_refused';
+    if (outcome === 'refused') return 'platform_join_refused';
 
     // A typed denial (or a bot-detection block, which is the platform refusing us just as flatly)
     // is a verdict, not an inference — it outranks any timing.

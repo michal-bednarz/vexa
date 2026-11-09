@@ -9,6 +9,7 @@ import type { Page } from '@vexa/remote-browser';
 import {
   joinMeeting,
   AdmissionError,
+  GoogleJoinRefusedError,
   leaveGoogleMeet, leaveMicrosoftTeams, leaveZoomMeeting, leaveJitsiMeeting,
   startGoogleRemovalMonitor, startTeamsRemovalMonitor, startZoomRemovalMonitor, startJitsiRemovalMonitor,
   stopZoomIncomingVideo,
@@ -39,6 +40,14 @@ export function admissionOutcomeToJoinOutcome(outcome: AdmissionOutcome): JoinOu
     case 'join_failure':         return 'error';
     default:                     return 'error';
   }
+}
+
+/** A typed admission verdict → a JoinOutcome. A Meet refusal of a meeting that does not admit browser
+ *  guests is `refused`, not a host's `rejected`: no host was asked, and every bot gets the same answer.
+ *  Meet's other refusal stays `rejected`, so meeting-api can still send it a new pod (meet_respawn.py). */
+export function admissionErrorToJoinOutcome(e: AdmissionError): JoinOutcome {
+  if (e instanceof GoogleJoinRefusedError && e.guestBlocked) return 'refused';
+  return admissionOutcomeToJoinOutcome(e.outcome);
 }
 
 /**
@@ -156,7 +165,7 @@ export function createBrowserJoinDriver(
         // still gets the timings, because the orchestrator asks the driver for them on that path.
         if (e instanceof AdmissionError) {
           return {
-            outcome: admissionOutcomeToJoinOutcome(e.outcome),
+            outcome: admissionErrorToJoinOutcome(e),
             reason: e.message,
             signals: signals({ detail: e.message }),
           };
