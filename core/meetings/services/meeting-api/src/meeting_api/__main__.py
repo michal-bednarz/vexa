@@ -128,6 +128,19 @@ def _calendar_feed_allow_at_boot(env: "os._Environ | dict | None" = None):
         raise ConfigError(f"meeting-api refuses to boot: {e}") from None
 
 
+def _calendar_max_ics_bytes_at_boot(env: "os._Environ | dict | None" = None) -> int:
+    """``CALENDAR_SYNC_MAX_ICS_BYTES``, parsed once at boot. A value that is not a positive whole
+    number of bytes refuses the boot naming the key, rather than failing every feed fetch."""
+    from .calendar_sync.adapters import MAX_ICS_BYTES_ENV, max_ics_bytes
+    from .config_preflight import ConfigError
+
+    env = os.environ if env is None else env
+    try:
+        return max_ics_bytes(env.get(MAX_ICS_BYTES_ENV) or "")
+    except ValueError as e:
+        raise ConfigError(f"meeting-api refuses to boot: {e}") from None
+
+
 def _meeting_host_allow_at_boot(env: "os._Environ | dict | None" = None):
     """``VEXA_MEETING_HOST_ALLOW``, parsed once at boot. A bad entry — a wildcard, a network
     overlapping loopback or cloud metadata, a malformed name — refuses the boot naming it."""
@@ -222,6 +235,7 @@ def build_production_app():
     _auth_session_at_boot()  # S64: a broken authenticated-bot store refuses the boot, not the first spawn
     _capture_signal_default_at_boot()  # a typo in the tape switch refuses the boot, never guesses
     _calendar_feed_allow_at_boot()  # a malformed internal-feed allowance refuses the boot
+    _calendar_max_ics_bytes_at_boot()  # a malformed feed-size cap refuses the boot
     _auto_join_block_at_boot()  # a malformed auto-join block list refuses the boot
     _meeting_host_allow_at_boot()  # a malformed meeting-host allowance refuses the boot
     _transcription_language_at_boot()  # a refused default language stops the boot, not the first spawn

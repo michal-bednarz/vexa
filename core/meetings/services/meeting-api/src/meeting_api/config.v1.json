@@ -829,6 +829,13 @@
    "targets": []
   },
   {
+   "key": "CALENDAR_SYNC_MAX_ICS_BYTES",
+   "class": "defaulted",
+   "default": "33554432",
+   "description": "decoded-size cap (bytes) on one ICS feed fetch. A secret iCal address exports the whole calendar, past events included, so a work calendar with years of meetings runs to megabytes; the body is streamed and the fetch stops at the cap, and a Content-Length over it is refused before the body is read. Not a positive whole number refuses the boot.",
+   "targets": []
+  },
+  {
    "key": "VEXA_CALENDAR_FEED_ALLOW",
    "class": "defaulted",
    "default": "(empty — no internal feed is reachable)",
