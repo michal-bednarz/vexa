@@ -6,9 +6,9 @@ reference half — a reader arrives with a value the API gave them and leaves kn
 
 | Page | Answers |
 |---|---|
-| `completion-reasons.mdx` | why a terminal meeting ended — all ten `completion_reason` values, whose side each points at, and what to do |
+| `completion-reasons.mdx` | why a terminal meeting ended — all eleven `completion_reason` values, whose side each points at, and what to do |
 
 `completion-reasons.mdx` enumerates the sealed `lifecycle.v1` `CompletionReason` enum
 (`core/meetings/contracts/lifecycle.v1/lifecycle.schema.json`). **If that enum changes, this page
-is the consumer that must change with it** — it claims "ten values, no more" in its own first
+is the consumer that must change with it** — it claims "eleven values, no more" in its own first
 paragraph. Nav order lives in `../docs.json`.
