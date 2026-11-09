@@ -556,6 +556,11 @@ def test_evidence_rides_the_callback_response_body():
 # Each row is a TAPE: the intermediate states the bot reported, then the exact terminal event it
 # emitted. Replaying one through the shipped callback must land the same classification every time —
 # a regression tape that needs no browser, no meeting and no platform.
+_GUEST_BLOCKED = (
+    "Google Meet refused the join: this meeting does not admit guests joining from a browser "
+    "(ResolveMeetingSpace answered HTTP 403: The requester cannot resolve this meeting due to the client "
+    "they are joining from); the host never received a request to admit the bot"
+)
 _FIXTURES = [
     (
         "meet-admission-timeout",
@@ -603,6 +608,23 @@ _FIXTURES = [
          "reason": "google_meet_join_refused: Google Meet refused the join on 5 of 5 knocks "
                    "(CreateMeetingDevice answered HTTP 403); the host never received a request to admit the bot"},
         ("platform_join_refused", "system_fault"),
+    ),
+    (
+        "meet-guest-blocked",
+        ["joining"],
+        {"status": "failed", "exit_code": 1, "failure_stage": "joining",
+         "completion_reason": "platform_join_refused", "reason": _GUEST_BLOCKED,
+         "join_evidence": {"reason": "platform_join_refused", "attribution": "exogenous_platform",
+                           "source": "bot", "stage": "joining", "detail": _GUEST_BLOCKED}},
+        ("platform_join_refused", "exogenous_platform"),
+    ),
+    (
+        # The same terminal from a bot whose evidence did not survive: meeting-api derives the verdict.
+        "meet-guest-blocked-derived",
+        ["joining"],
+        {"status": "failed", "exit_code": 1, "failure_stage": "joining",
+         "completion_reason": "platform_join_refused", "reason": _GUEST_BLOCKED},
+        ("platform_join_refused", "exogenous_platform"),
     ),
     (
         "signed-out-profile",
