@@ -211,6 +211,26 @@ def test_a_host_decision_is_not_respawned(world):
     assert repo._meetings[mid]["status"] == "failed"
 
 
+def test_a_meeting_that_blocks_browser_guests_is_not_respawned(world):
+    # @vexa/join GOOGLE_GUEST_BLOCKED: every bot gets the same answer, so the bot leaves out the
+    # respawn marker and types the terminal itself.
+    repo, runtime, client = world
+    mid, sid = _joining(world)
+    blocked = ("Google Meet refused the join: this meeting does not admit guests joining from a browser "
+               "(ResolveMeetingSpace answered HTTP 403: The requester cannot resolve this meeting due to the "
+               "client they are joining from); the host never received a request to admit the bot")
+    r = client.post(LIFECYCLE, json=_event(
+        sid, "failed", exit_code=1, failure_stage="joining", completion_reason="platform_join_refused",
+        reason=blocked, join_evidence={"reason": "platform_join_refused", "attribution": "exogenous_platform",
+                                       "source": "bot", "stage": "joining", "detail": blocked}))
+    assert r.status_code == 200 and "respawn" not in r.json(), r.text
+    row = repo._meetings[mid]
+    assert row["status"] == "failed" and row["data"]["completion_reason"] == "platform_join_refused"
+    assert row["data"]["join_evidence"]["attribution"] == "exogenous_platform"
+    assert row["data"]["meet_respawn"]["attempts"] == []
+    assert _due(repo, runtime) == 0 and len(runtime.specs) == 1, "one pod, no second"
+
+
 # ── stop between pods ───────────────────────────────────────────────────────────────────────────
 
 def test_stop_between_pods_ends_the_meeting_and_starts_nothing(world):
