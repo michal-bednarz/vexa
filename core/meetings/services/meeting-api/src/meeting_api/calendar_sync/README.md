@@ -21,8 +21,10 @@ domain).
   row (`data.auto_join_user_set`, written by `PATCH /meetings/{id}`), and rows imported before plural
   calendars — bare `data.calendar_uid`, no sources — are claimed only by the `legacy=True` connection,
   which is also the one that may retire them.
-- `fetch_ics(url, client=None)` — **SSRF-pinned** (`webhooks/ssrf.build_pinned_transport`), 2 MB cap,
-  no redirects; pass a `build_ics_client()` to share one connection pool across a sweep.
+- `fetch_ics(url, client=None)` — **SSRF-pinned** (`webhooks/ssrf.build_pinned_transport`), no
+  redirects, size-capped at `CALENDAR_SYNC_MAX_ICS_BYTES` decoded bytes (default 32 MB, parsed at
+  boot): the body is streamed and the fetch stops at the cap, a `Content-Length` over it is refused
+  on the head alone, and an HTML page reports itself as one at any size; pass a `build_ics_client()` to share one connection pool across a sweep.
   `build_ics_client` builds the transport with the operator's calendar-feed allowance
   (`feed_allowance()`, env `VEXA_CALENDAR_FEED_ALLOW`, parsed at boot): internal hosts/networks a
   feed may be served from. Nothing else in meeting-api uses it. See

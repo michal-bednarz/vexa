@@ -99,6 +99,9 @@ preference.
 - **Hosted calendar rollout:** polls each connected feed every **60 seconds**.
 - **Self-hosted default:** polls every **5 minutes**. Operators can change this with
   `CALENDAR_SYNC_INTERVAL_S`.
+- **Feed size:** a secret iCal address exports the whole calendar, every past event included,
+  though Vexa keeps only the next two weeks of it. A feed is accepted up to **32 MB**; operators can
+  change the cap with `CALENDAR_SYNC_MAX_ICS_BYTES` (bytes).
 - **Bot scheduling:** checks due planned meetings every **30 seconds** by default. A bot becomes
   eligible **60 seconds before** `scheduled_at` and remains eligible until **10 minutes after** it.
 
@@ -257,7 +260,7 @@ can show:
 | `the URL returns a web page, not a calendar feed` | An embed/share *page* URL, not a feed. (Google's embed page is also rejected at save.) | Copy the address from **Integrate calendar**, not the browser's address bar. |
 | `the URL redirects — paste the final feed URL` | The address bounces through a redirect; the guarded fetch doesn't follow them. | Paste the URL the redirect lands on. |
 | `the URL doesn't return an ICS calendar (no BEGIN:VCALENDAR)` | The server answered, but not with calendar data. | Check you copied the full `.ics` address. |
-| `the feed is too large (over 2 MB)` | Unusually huge feed. | Sync a specific calendar rather than an aggregate. |
+| `the feed is too large (over 32 MB)` | The feed's size is over the deployment's cap (`CALENDAR_SYNC_MAX_ICS_BYTES`, default 32 MB). A secret iCal address exports the whole calendar, past events included, so only an exceptionally large history reaches it. | Self-hosted: raise `CALENDAR_SYNC_MAX_ICS_BYTES` for meeting-api. Hosted: tell us the feed's size. |
 | `couldn't reach the URL (unreachable, timed out, or a blocked/internal address)` | Network failure, or the address points somewhere the server-side guard refuses (internal hosts). | Verify the URL opens from a browser; use the calendar provider's public host. |
 
 ## What imports (and what doesn't)
