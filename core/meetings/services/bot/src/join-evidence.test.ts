@@ -251,6 +251,33 @@ check(
   'control: the same early exit WITHOUT that evidence still reads as the platform refusing (#1058)',
   classifyJoinFailure('timeout', { reachedLobby: true, timeInLobbyMs: 602_000, lobbyBudgetMs: 900_000 }) === 'awaiting_admission_rejected',
 );
+// @vexa/join asks again after Meet ends a request (googlemeet/refusal.ts): the verdicts that follow
+// name each request, and still read as the host not admitting.
+check(
+  'asked again, then our own budget ran out: a timeout that stays with the host',
+  classifyJoinFailure('timeout', { reachedLobby: true, timeInLobbyMs: 895_000, lobbyBudgetMs: 900_000, detail: 'Bot is still in the Google Meet waiting room after timeout — host did not admit; 2 join requests: 1) 10:00:05Z–10:10:05Z ended by Meet, 2) 10:10:05Z–10:15:20Z lobby budget ran out' }) === 'awaiting_admission_timeout'
+    && attributeJoinFailure('awaiting_admission_timeout', 'Bot is still in the Google Meet waiting room after timeout — host did not admit; 2 join requests: 1) 10:00:05Z–10:10:05Z ended by Meet, 2) 10:10:05Z–10:15:20Z lobby budget ran out') === 'host_action',
+);
+check(
+  'Meet refusing the re-ask after the host let request 1 expire: the host\'s timeout, never a platform refusal',
+  classifyJoinFailure('timeout', { reachedLobby: true, timeInLobbyMs: 650_000, lobbyBudgetMs: 900_000, detail: 'Google Meet ended the join request, nobody admitted the bot; 1 join request: 1) 10:00:05Z–10:10:05Z ended by Meet; then Meet refused 5 knocks (CreateMeetingDevice answered HTTP 403)' }) === 'awaiting_admission_timeout'
+    && attributeJoinFailure('awaiting_admission_timeout', 'Google Meet ended the join request, nobody admitted the bot; 1 join request: 1) 10:00:05Z–10:10:05Z ended by Meet; then Meet refused 5 knocks (CreateMeetingDevice answered HTTP 403)') === 'host_action',
+);
+check(
+  'a host denial of the second request is still the host\'s rejection',
+  classifyJoinFailure('rejected', { reachedLobby: true, detail: 'Bot admission was rejected by meeting admin; 2 join requests: 1) 10:00:05Z–10:10:05Z ended by Meet, 2) 10:10:05Z–10:11:00Z denied' }) === 'awaiting_admission_rejected'
+    && attributeJoinFailure('awaiting_admission_rejected', 'Bot admission was rejected by meeting admin; 2 join requests: 1) 10:00:05Z–10:10:05Z ended by Meet, 2) 10:10:05Z–10:11:00Z denied') === 'host_action',
+);
+check(
+  'a meeting that does not admit browser guests: platform_join_refused, exogenous',
+  classifyJoinFailure('refused', { reachedLobby: false, detail: 'Google Meet refused the join: this meeting does not admit guests joining from a browser (ResolveMeetingSpace answered HTTP 403: The requester cannot resolve this meeting due to the client they are joining from); the host never received a request to admit the bot' }) === 'platform_join_refused'
+    && attributeJoinFailure('platform_join_refused', 'Google Meet refused the join: this meeting does not admit guests joining from a browser (ResolveMeetingSpace answered HTTP 403: The requester cannot resolve this meeting due to the client they are joining from); the host never received a request to admit the bot') === 'exogenous_platform',
+);
+check(
+  'control: the flaky refusal with its body keeps its verdict (rejected, exogenous, respawned by meeting-api)',
+  classifyJoinFailure('rejected', { reachedLobby: false, detail: 'google_meet_join_refused: Google Meet refused the join on 5 of 5 knocks (CreateMeetingDevice answered HTTP 403: The caller does not have permission); the host never received a request to admit the bot' }) === 'awaiting_admission_rejected'
+    && attributeJoinFailure('awaiting_admission_rejected', 'google_meet_join_refused: Google Meet refused the join on 5 of 5 knocks (CreateMeetingDevice answered HTTP 403: The caller does not have permission); the host never received a request to admit the bot') === 'exogenous_platform',
+);
 check(
   'the override is scoped: the same admission-flow words do not move a REJECTION',
   attributeJoinFailure('awaiting_admission_rejected', 'no meeting indicators found') === 'host_action',
@@ -364,7 +391,14 @@ type Fixture = {
   expectReason: JoinFailureReason;
   expectAttribution: JoinFailureAttribution;
   expectStage: 'requested' | 'joining' | 'awaiting_admission';
+  expectCompletion?: LifecycleEvent['completion_reason'];
 };
+
+const GUEST_BLOCKED_TEXT = 'Google Meet refused the join: this meeting does not admit guests joining from a browser ' +
+  '(ResolveMeetingSpace answered HTTP 403: The requester cannot resolve this meeting due to the client they are joining from); ' +
+  'the host never received a request to admit the bot';
+const MEET_REFUSED_TEXT = 'google_meet_join_refused: Google Meet refused the join on 5 of 5 knocks ' +
+  '(CreateMeetingDevice answered HTTP 403: The caller does not have permission); the host never received a request to admit the bot';
 
 const FIXTURES: Fixture[] = [
   {
@@ -442,6 +476,30 @@ const FIXTURES: Fixture[] = [
     expectAttribution: 'system_fault',
     expectStage: 'joining',
   },
+  {
+    // A Meet room that admits only its creator's app (bbb, 4 Nov 2026): refused on knock 1, no host asked.
+    name: 'meet-guest-blocked',
+    driver: replayJoin({
+      result: { outcome: 'refused', reason: GUEST_BLOCKED_TEXT,
+                signals: { reachedLobby: false, totalMs: 6_800, lobbyBudgetMs: BUDGET_MS, detail: GUEST_BLOCKED_TEXT } },
+    }),
+    expectReason: 'platform_join_refused',
+    expectAttribution: 'exogenous_platform',
+    expectStage: 'joining',
+    expectCompletion: 'platform_join_refused',
+  },
+  {
+    // Control: Meet's other refusal keeps the host-denial wire shape meeting-api respawns on.
+    name: 'meet-refused-every-knock',
+    driver: replayJoin({
+      result: { outcome: 'rejected', reason: MEET_REFUSED_TEXT,
+                signals: { reachedLobby: false, totalMs: 41_000, lobbyBudgetMs: BUDGET_MS, detail: MEET_REFUSED_TEXT } },
+    }),
+    expectReason: 'awaiting_admission_rejected',
+    expectAttribution: 'exogenous_platform',
+    expectStage: 'joining',
+    expectCompletion: 'awaiting_admission_rejected',
+  },
 ];
 
 async function runFixtures(): Promise<void> {
@@ -461,6 +519,10 @@ async function runFixtures(): Promise<void> {
     check(`[${f.name}] attribution = ${f.expectAttribution}`,
       ev?.attribution === f.expectAttribution, `got ${ev?.attribution}`);
     check(`[${f.name}] stage = ${f.expectStage}`, ev?.stage === f.expectStage, `got ${ev?.stage}`);
+    if (f.expectCompletion) {
+      check(`[${f.name}] completion_reason = ${f.expectCompletion}`,
+        terminal.completion_reason === f.expectCompletion, `got ${terminal.completion_reason}`);
+    }
     check(`[${f.name}] a human reason text is stamped (never null)`,
       typeof terminal.reason === 'string' && terminal.reason.length > 0);
     check(`[${f.name}] the raw platform signal is preserved`,

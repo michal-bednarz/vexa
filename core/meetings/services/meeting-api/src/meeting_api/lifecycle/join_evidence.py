@@ -229,6 +229,13 @@ _PLATFORM_POLICY_MARKERS = (
     "unusual traffic",
 )
 
+#: Producer-message markers that identify a meeting that does not admit a guest from a browser at all
+#: (``@vexa/join`` GOOGLE_GUEST_BLOCKED): Meet refuses every knock of every bot on the meeting's own
+#: setting, so the refusal is the platform's, not ours.
+_GUEST_BLOCKED_MARKERS = (
+    "cannot resolve this meeting due to the client",
+)
+
 #: Producer-message markers that positively identify OUR admission flow as the thing that broke —
 #: the join layer could not read the platform's state at all (selector rot, an indicator set that no
 #: longer matches). A wait that ended this way is not a host declining to admit; it is us failing to
@@ -378,6 +385,9 @@ def attribute_join_failure(
     * a platform-policy refusal (automated joins blocked, bot-detection) reattributes a rejection
       from the host to :attr:`~JoinFailureAttribution.EXOGENOUS_PLATFORM` — no host decided that,
       and no fix of ours reverses it;
+    * a platform refusal of a meeting that does not admit browser guests reattributes from us to
+      :attr:`~JoinFailureAttribution.EXOGENOUS_PLATFORM` — the meeting's own setting, not a refusal
+      a new pod could get past;
     * an admission wait that ended because our join layer could not read the platform's state at
       all reattributes from the host to :attr:`~JoinFailureAttribution.SYSTEM_FAULT` — the host
       never got the chance to decline.
@@ -391,6 +401,10 @@ def attribute_join_failure(
             return base
         if reason is JoinFailureReason.AWAITING_ADMISSION_REJECTED and any(
             marker in text for marker in _PLATFORM_POLICY_MARKERS
+        ):
+            return JoinFailureAttribution.EXOGENOUS_PLATFORM
+        if reason is JoinFailureReason.PLATFORM_JOIN_REFUSED and any(
+            marker in text for marker in _GUEST_BLOCKED_MARKERS
         ):
             return JoinFailureAttribution.EXOGENOUS_PLATFORM
         if reason is JoinFailureReason.AWAITING_ADMISSION_TIMEOUT and any(

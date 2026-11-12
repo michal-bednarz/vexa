@@ -158,6 +158,7 @@ function driverSignals(join: JoinDriver): JoinSignals | undefined {
 /** Map a non-admitted join verdict to the terminal completion_reason. */
 const OUTCOME_FAIL: Record<Exclude<JoinOutcome, 'admitted'>, CompletionReason> = {
   rejected: 'awaiting_admission_rejected',
+  refused: 'platform_join_refused',
   timeout: 'awaiting_admission_timeout',
   blocked: 'join_failure',
   auth_missing: 'auth_session_missing',

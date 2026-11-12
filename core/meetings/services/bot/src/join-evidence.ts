@@ -56,8 +56,9 @@ export type JoinFailureReason =
   | 'ui_locale_mismatch'
   /** The USER stopped the run while the bot was still knocking. Not a failure. */
   | 'stopped_while_joining'
-  /** The platform refused every bot pod before a host saw a request (Google Meet's 403). Typed by
-   *  meeting-api on the meeting's final refusal (lifecycle/meet_respawn.py); the bot does not emit it. */
+  /** The platform refused the join before a host saw a request (Google Meet's 403). Typed by
+   *  meeting-api when Meet refused every bot pod (lifecycle/meet_respawn.py), and by the bot itself
+   *  when the meeting does not admit browser guests (`refused`), where no new pod is started. */
   | 'platform_join_refused'
   /** The signals do not support a verdict. `detail` carries what was observed. */
   | 'unknown';
@@ -138,6 +139,13 @@ const PLATFORM_POLICY_MARKERS = [
   'google_meet_join_refused',
 ];
 
+/** Markers that identify a meeting that does not admit a guest from a browser at all: Meet's own
+ *  answer to every knock (@vexa/join GOOGLE_GUEST_BLOCKED). The platform refused before any host was
+ *  asked, on the meeting's own setting, so no retry of ours and no host's admit changes it. */
+const GUEST_BLOCKED_MARKERS = [
+  'cannot resolve this meeting due to the client',
+];
+
 /** Markers that identify OUR admission flow as the thing that broke — the join layer could not read
  *  the platform's state at all. A wait that ended this way is not a host declining to admit. */
 const ADMISSION_FLOW_FAULT_MARKERS = [
@@ -215,6 +223,10 @@ export function classifyJoinFailure(
     // on that page (a timeout, a "rejection") is untrusted, so this outranks the outcome.
     if (matches(detail, [UI_LOCALE_MISMATCH_MARKER])) return 'ui_locale_mismatch';
 
+    // Meet refusing a meeting that does not admit browser guests: the platform's refusal, typed here
+    // because meeting-api never sees GOOGLE_JOIN_REFUSED on it (no new pod is worth starting).
+    if (outcome === 'refused') return 'platform_join_refused';
+
     // A typed denial (or a bot-detection block, which is the platform refusing us just as flatly)
     // is a verdict, not an inference — it outranks any timing.
     if (outcome === 'rejected' || outcome === 'blocked') return 'awaiting_admission_rejected';
@@ -253,6 +265,9 @@ export function attributeJoinFailure(
     const text = cleanDetail(detail);
     if (!text) return base;
     if (reason === 'awaiting_admission_rejected' && matches(text, PLATFORM_POLICY_MARKERS)) {
+      return 'exogenous_platform';
+    }
+    if (reason === 'platform_join_refused' && matches(text, GUEST_BLOCKED_MARKERS)) {
       return 'exogenous_platform';
     }
     if (reason === 'awaiting_admission_timeout' && matches(text, ADMISSION_FLOW_FAULT_MARKERS)) {

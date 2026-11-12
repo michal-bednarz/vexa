@@ -10,7 +10,8 @@
  */
 import {
   knockUntilGoogleAccepts, GoogleJoinRefusedError, GOOGLE_JOIN_MAX_KNOCKS, GOOGLE_JOIN_REFUSED,
-  GOOGLE_JOIN_REKNOCK_BACKOFF_MS, googleKnockConfig,
+  GOOGLE_JOIN_REKNOCK_BACKOFF_MS, googleKnockConfig, GoogleKnockExpiredError, GOOGLE_MEET_MAX_REQUESTS,
+  GOOGLE_GUEST_BLOCKED, refusalMessage,
 } from './refusal';
 import { AdmissionError } from '../shared/admission';
 import { waitForAnySelector, waitForLobbyCta } from './join';
@@ -20,6 +21,14 @@ function check(name: string, ok: boolean, detail?: string) {
   if (ok) { console.log(`  \x1b[32mPASS\x1b[0m  ${name}`); passed++; }
   else { console.log(`  \x1b[31mFAIL\x1b[0m  ${name}${detail ? ` (${detail})` : ''}`); failed++; }
 }
+
+// A google.rpc.Status as Meet sends it: code (field 1), message (field 2), details (field 3).
+const statusBody = (code: number, message: string, typeUrl?: string): Buffer => {
+  const str = (field: number, b: Buffer) => Buffer.concat([Buffer.from([(field << 3) | 2, b.length]), b]);
+  const parts = [Buffer.from([0x08, code]), str(2, Buffer.from(message))];
+  if (typeUrl) parts.push(str(3, Buffer.concat([str(1, Buffer.from(typeUrl)), str(2, Buffer.from([0x10, 0x0b]))])));
+  return Buffer.concat(parts);
+};
 
 const page: any = {};
 const refused = () => new GoogleJoinRefusedError('CreateMeetingDevice answered HTTP 403');
@@ -178,6 +187,169 @@ const fast = { sleep: async () => {} };
     polls = 0;
     const ctaErr = await waitForLobbyCta(blank, ['button:has-text("Ask to join")'], 60_000, 'join button', guard).catch((e) => e);
     check('join-button wait ends on the refusal guard, typed', ctaErr instanceof GoogleJoinRefusedError && polls === 3, `${ctaErr?.name} polls=${polls}`);
+  }
+
+  console.log('\n=== Meet ended the request unanswered: ask again while the budget lasts ===');
+
+  // Prod, 3-4 Nov 2026: every "No one responded" bot ended at 598-603 s in the lobby of a 900 s budget.
+  // The clock is the test's: each knock moves it by the time Meet or our budget took.
+  const expired = () => new GoogleKnockExpiredError('Meet showed "No one responded to your request to join the call"');
+  const stillWaiting = () => new AdmissionError('lobby_timeout', 'Bot is still in the Google Meet waiting room after timeout — host did not admit');
+
+  // Expired at 600 s, then the host admits the second request.
+  {
+    let clock = 0;
+    const budgets: number[] = [];
+    const got = await knockUntilGoogleAccepts(page, 900_000, async (remaining) => {
+      budgets.push(remaining);
+      if (budgets.length === 1) { clock += 600_000; throw expired(); }
+      clock += 30_000;
+      return true;
+    }, () => clock, fast);
+    check('expired at 600 s, then admitted → admitted on request 2', got === true && budgets.length === 2, `got=${got} knocks=${budgets.length}`);
+    check('… request 2 gets the 300 s left, not a fresh budget', budgets[1] === 300_000, JSON.stringify(budgets));
+  }
+
+  // Expired, then nobody answers request 2 either: our own budget ends it, and the verdict says when
+  // each request was open.
+  {
+    let clock = 0;
+    let knocks = 0;
+    const err = await knockUntilGoogleAccepts(page, 900_000, async (remaining) => {
+      knocks++;
+      if (knocks === 1) { clock += 600_000; throw expired(); }
+      clock += remaining;
+      throw stillWaiting();
+    }, () => clock, fast).catch((e) => e);
+    check('expired, then budget ran out → two requests, lobby_timeout', knocks === 2 && err instanceof AdmissionError && err.outcome === 'lobby_timeout', `knocks=${knocks} ${err?.outcome}`);
+    check('… names both requests and their times',
+      err?.message === 'Bot is still in the Google Meet waiting room after timeout — host did not admit; 2 join requests: 1) 00:00:00Z–00:10:00Z ended by Meet, 2) 00:10:00Z–00:15:00Z lobby budget ran out',
+      err?.message);
+  }
+
+  // Under 60 s of budget left when Meet ends the request: no new request.
+  {
+    let clock = 0;
+    let knocks = 0;
+    const err = await knockUntilGoogleAccepts(page, 650_000, async () => { knocks++; clock += 600_000; throw expired(); }, () => clock, fast).catch((e) => e);
+    check('expired with 50 s left → no new request', knocks === 1 && err?.outcome === 'lobby_timeout', `knocks=${knocks}`);
+    check('… the verdict keeps Meet\'s expiry words and says why it stopped',
+      /^Google Meet ended the join request, nobody admitted the bot: .*; 1 join request: 1\) 00:00:00Z–00:10:00Z ended by Meet; not asking again: 50 s of the lobby budget left$/.test(err?.message ?? ''), err?.message);
+  }
+
+  // Meet ending a request within 2 minutes is not its 10-minute expiry: never a loop of requests.
+  {
+    let clock = 0;
+    let knocks = 0;
+    const err = await knockUntilGoogleAccepts(page, 900_000, async () => { knocks++; clock += 20_000; throw expired(); }, () => clock, fast).catch((e) => e);
+    check('ended after 20 s → no new request (no tight loop)', knocks === 1 && /not asking again: Meet ended it after 20 s$/.test(err?.message ?? ''), `knocks=${knocks} ${err?.message}`);
+  }
+
+  // A long budget: at most GOOGLE_MEET_MAX_REQUESTS requests.
+  {
+    let clock = 0;
+    let knocks = 0;
+    const err = await knockUntilGoogleAccepts(page, 3_600_000, async () => { knocks++; clock += 600_000; throw expired(); }, () => clock, fast).catch((e) => e);
+    check(`1 h budget, every request expires → ${GOOGLE_MEET_MAX_REQUESTS} requests, then stop`, knocks === GOOGLE_MEET_MAX_REQUESTS && new RegExp(`not asking again: ${GOOGLE_MEET_MAX_REQUESTS} requests made$`).test(err?.message ?? ''), `knocks=${knocks} ${err?.message}`);
+  }
+
+  // A host denial or an unsolved captcha on the second request ends it there: never asked again.
+  for (const [label, e] of [
+    ['host denial', new AdmissionError('denial', 'Bot admission was rejected by meeting admin')],
+    ['captcha', new AdmissionError('denial', 'Bot faced a reCAPTCHA challenge that went unsolved for 120s alongside a rejection screen')],
+  ] as const) {
+    let clock = 0;
+    let knocks = 0;
+    const err = await knockUntilGoogleAccepts(page, 900_000, async () => {
+      knocks++;
+      if (knocks === 1) { clock += 600_000; throw expired(); }
+      clock += 40_000;
+      throw e;
+    }, () => clock, fast).catch((x) => x);
+    check(`expired, then ${label} → two requests, denial`, knocks === 2 && err instanceof AdmissionError && err.outcome === 'denial', `knocks=${knocks} ${err?.outcome}`);
+    check(`… ${label} message kept, requests named`, err?.message === `${e.message}; 2 join requests: 1) 00:00:00Z–00:10:00Z ended by Meet, 2) 00:10:00Z–00:10:40Z denied`, err?.message);
+  }
+
+  // A typed subclass after an expiry passes as it is: the embedder checks its type.
+  {
+    class TypedError extends AdmissionError { constructor() { super('join_failure', 'typed'); } }
+    const typed = new TypedError();
+    let clock = 0;
+    let knocks = 0;
+    const err = await knockUntilGoogleAccepts(page, 900_000, async () => {
+      knocks++;
+      if (knocks === 1) { clock += 600_000; throw expired(); }
+      throw typed;
+    }, () => clock, fast).catch((x) => x);
+    check('expired, then a typed AdmissionError subclass → the same error object', knocks === 2 && err === typed, `knocks=${knocks}`);
+  }
+
+  // Meet refuses every re-ask after the host let request 1 expire: the expiry is the verdict (the host
+  // did see a request), not "the host never received a request".
+  {
+    let clock = 0;
+    let knocks = 0;
+    const err = await knockUntilGoogleAccepts(page, 900_000, async () => {
+      knocks++;
+      if (knocks === 1) { clock += 600_000; throw expired(); }
+      clock += 10_000;
+      throw refused();
+    }, () => clock, { ...fast, maxKnocks: 3 }).catch((x) => x);
+    check('expired, then 3 refusals → 4 knocks, lobby_timeout (not a refusal)', knocks === 4 && err?.outcome === 'lobby_timeout' && !(err instanceof GoogleJoinRefusedError), `knocks=${knocks} ${err?.name} ${err?.outcome}`);
+    check('… message keeps Meet\'s expiry words, names the request and the refusals',
+      err?.message === 'Google Meet ended the join request, nobody admitted the bot; 1 join request: 1) 00:00:00Z–00:10:00Z ended by Meet; then Meet refused 3 knocks (CreateMeetingDevice answered HTTP 403)',
+      err?.message);
+  }
+
+  // A refused knock followed by an expiry and an admission: both loops share one join.
+  {
+    let clock = 0;
+    const seen: string[] = [];
+    const got = await knockUntilGoogleAccepts(page, 900_000, async () => {
+      if (seen.length === 0) { seen.push('refused'); clock += 10_000; throw refused(); }
+      if (seen.length === 1) { seen.push('expired'); clock += 600_000; throw expired(); }
+      seen.push('admitted');
+      return true;
+    }, () => clock, fast);
+    check('refused, expired, admitted → admitted on knock 3', got === true && seen.join(',') === 'refused,expired,admitted', seen.join(','));
+  }
+
+  console.log('\n=== The 403 body: a meeting that does not admit browser guests (bbb, 4 Nov 2026) ===');
+
+  // Meet's 403 bodies as captured on bbb: a protobuf with the message and an ErrorDetails type URL.
+  const policyBody = statusBody(7, 'The requester cannot resolve this meeting due to the client they are joining from', 'type.googleapis.com/google.rtc.meetings.v1.ErrorDetails');
+  const flakyBody = statusBody(7, 'The caller does not have permission');
+  check('policy body → its message, without the type URL', refusalMessage(policyBody) === 'The requester cannot resolve this meeting due to the client they are joining from', String(refusalMessage(policyBody)));
+  check('flaky body → its message', refusalMessage(flakyBody) === 'The caller does not have permission', String(refusalMessage(flakyBody)));
+  check('no message field → null', refusalMessage(Buffer.from([0x08, 0x07])) === null);
+  check('a truncated body → null, never a throw', refusalMessage(Buffer.from([0x08, 0x07, 0x12, 0x40, 0x41])) === null);
+  check('not protobuf (an HTML error page) → null', refusalMessage(Buffer.from('<html>403</html>')) === null);
+  // The bytes of a ResolveMeetingSpace 403 as meet.google.com sent them to an anonymous Chrome (9 Nov
+  // 2026, a meeting code that does not exist): application/x-protobuf, no safety encoding.
+  const captured = Buffer.from('CAcSI1RoZSBjYWxsZXIgZG9lcyBub3QgaGF2ZSBwZXJtaXNzaW9u', 'base64');
+  check('a captured 403 body → its message', refusalMessage(captured) === 'The caller does not have permission', String(refusalMessage(captured)));
+  const safetyEncoded = Buffer.from(policyBody.toString('base64'), 'latin1');
+  check('x-goog-safety-encoding: base64 → decoded first', refusalMessage(safetyEncoded, 'base64') === refusalMessage(policyBody), String(refusalMessage(safetyEncoded, 'base64')));
+  check('… and unread without the header (base64 text is not a Status)', refusalMessage(safetyEncoded) === null);
+
+  const blocked = () => new GoogleJoinRefusedError(`ResolveMeetingSpace answered HTTP 403: ${refusalMessage(policyBody)}`);
+  {
+    const e = blocked();
+    check('guest-blocked refusal is flagged', e.guestBlocked === true && e.outcome === 'denial');
+    check('… its message names the meeting\'s setting and the body', /^Google Meet refused the join: this meeting does not admit guests joining from a browser \(ResolveMeetingSpace answered HTTP 403: The requester cannot resolve this meeting due to the client they are joining from\); the host never received a request to admit the bot$/.test(e.message), e.message);
+    check('… and leaves out the respawn marker, so meeting-api starts no new pod', !e.message.includes(GOOGLE_JOIN_REFUSED) && e.message.includes(GOOGLE_GUEST_BLOCKED));
+    check('flaky refusal with its body: not guest-blocked, marker kept', !new GoogleJoinRefusedError('CreateMeetingDevice answered HTTP 403: The caller does not have permission').guestBlocked
+      && new GoogleJoinRefusedError('CreateMeetingDevice answered HTTP 403: The caller does not have permission').message.startsWith(GOOGLE_JOIN_REFUSED));
+  }
+  {
+    let knocks = 0;
+    const err = await knockUntilGoogleAccepts(page, 900_000, async () => { knocks++; throw blocked(); }, Date.now, fast).catch((e) => e);
+    check('guest-blocked on knock 1 → no second knock', knocks === 1 && err instanceof GoogleJoinRefusedError && err.guestBlocked, `knocks=${knocks}`);
+  }
+  {
+    let knocks = 0;
+    const err = await knockUntilGoogleAccepts(page, 900_000, async () => { knocks++; throw knocks < 3 ? refused() : blocked(); }, Date.now, fast).catch((e) => e);
+    check('flaky, flaky, then guest-blocked → stops on knock 3', knocks === 3 && err?.guestBlocked === true, `knocks=${knocks}`);
   }
 
   console.log(`\n=== summary: ${passed} passed, ${failed} failed ===`);
