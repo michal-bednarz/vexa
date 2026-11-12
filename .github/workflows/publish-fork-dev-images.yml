@@ -1,0 +1,231 @@
+# One-shot / on-demand publish of fork-built Vexa images to GHCR for operator trials.
+# Source: michal-bednarz/vexa@main (Meet guest-block 403 + ICS feed size cap, and whatever else is on the tip).
+# Images land at ghcr.io/michal-bednarz/<name>:<tag> and are made public so devops can pull anonymously.
+name: publish-fork-dev-images
+
+on:
+  push:
+    branches: ["cursor/publish-dev-images-2ac3"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build (branch, tag, or SHA). Default: this workflow's commit."
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: publish-fork-dev-images
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: michal-bednarz
+
+jobs:
+  # ─── Vexa Lite (all-in-one) — the primary devops deliverable ───────────────────────────────
+  publish-lite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+      tags: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 1
+
+      - name: Free runner disk
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image tags + labels
+        id: meta
+        uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f # v5.8.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.OWNER }}/vexa-lite
+          tags: |
+            type=raw,value=main
+            type=sha,prefix=main-,format=short
+            type=sha,prefix=meet-403-,format=short
+            type=raw,value=dev
+          labels: |
+            org.opencontainers.image.source=https://github.com/michal-bednarz/vexa
+            org.opencontainers.image.description=Vexa Lite from michal-bednarz/vexa (fork tip for devops)
+
+      - name: Build + push vexa-lite
+        id: push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: deploy/lite/Dockerfile.lite
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=fork-vexa-lite
+          cache-to: type=gha,mode=max,ignore-error=true,scope=fork-vexa-lite
+
+      - name: Make package public (anonymous pull)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # User-namespace package created by this push.
+          for attempt in 1 2 3 4 5; do
+            if gh api --method PUT \
+              -H "Accept: application/vnd.github+json" \
+              "/user/packages/container/vexa-lite/visibility" \
+              -f visibility=public >/tmp/vis.json 2>/tmp/vis.err; then
+              echo "✓ ghcr.io/${OWNER}/vexa-lite is public"
+              cat /tmp/vis.json || true
+              exit 0
+            fi
+            echo "visibility attempt $attempt failed:"; cat /tmp/vis.err || true
+            sleep $((attempt * 5))
+          done
+          echo "::warning::could not flip package visibility to public — devops may need a GHCR login that can read this package"
+          exit 0
+
+      - name: Summary
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          SHA: ${{ github.sha }}
+        run: |
+          {
+            echo "## Fork devops image — vexa-lite"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| source | \`michal-bednarz/vexa@${SHA}\` |"
+            echo "| digest | \`${DIGEST}\` |"
+            echo
+            echo "### Pull"
+            echo '```bash'
+            echo "docker pull ghcr.io/${OWNER}/vexa-lite:main"
+            echo "docker pull ghcr.io/${OWNER}/vexa-lite:main-${SHA:0:12}"
+            echo '```'
+            echo
+            echo "### Run (Lite)"
+            echo '```bash'
+            echo "git clone https://github.com/michal-bednarz/vexa.git && cd vexa"
+            echo "git checkout ${SHA}"
+            echo "docker pull ghcr.io/${OWNER}/vexa-lite:main"
+            echo "docker tag ghcr.io/${OWNER}/vexa-lite:main vexa-lite:dev"
+            echo "make lite"
+            echo '```'
+            echo
+            echo "Tags pushed:"
+            echo '```'
+            echo "$TAGS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ─── Compose overlays: meeting-api + bot (the Meet-403 / ICS surface) ──────────────────────
+  publish-meeting-api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 1
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image tags
+        id: meta
+        uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f # v5.8.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.OWNER }}/vexa-meeting-api
+          tags: |
+            type=raw,value=main
+            type=sha,prefix=main-,format=short
+            type=raw,value=dev
+
+      - name: Build + push meeting-api
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: core/meetings/services/meeting-api/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=fork-meeting-api
+          cache-to: type=gha,mode=max,ignore-error=true,scope=fork-meeting-api
+
+      - name: Make package public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh api --method PUT -H "Accept: application/vnd.github+json" \
+            "/user/packages/container/vexa-meeting-api/visibility" \
+            -f visibility=public || echo "::warning::visibility flip failed for vexa-meeting-api"
+
+  publish-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 1
+
+      - name: Free runner disk
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build join-env base + bot, push bot
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          SHORT="${SHA:0:12}"
+          DOCKER_BUILDKIT=1 docker build \
+            -f core/meetings/modules/join/Dockerfile.env \
+            -t vexa/meet-join-env:dev \
+            core/meetings/modules/join
+          DOCKER_BUILDKIT=1 docker build \
+            -f core/meetings/services/bot/Dockerfile \
+            --cache-from "vexaai/vexa-bot:v012" \
+            --build-arg "VEXA_IMAGE_VERSION=main-${SHORT}" \
+            -t "ghcr.io/${OWNER}/vexa-bot:main" \
+            -t "ghcr.io/${OWNER}/vexa-bot:main-${SHORT}" \
+            -t "ghcr.io/${OWNER}/vexa-bot:dev" \
+            .
+          docker push "ghcr.io/${OWNER}/vexa-bot:main"
+          docker push "ghcr.io/${OWNER}/vexa-bot:main-${SHORT}"
+          docker push "ghcr.io/${OWNER}/vexa-bot:dev"
+
+      - name: Make package public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh api --method PUT -H "Accept: application/vnd.github+json" \
+            "/user/packages/container/vexa-bot/visibility" \
+            -f visibility=public || echo "::warning::visibility flip failed for vexa-bot"
