@@ -546,6 +546,62 @@ def test_a_worker_push_that_fails_is_not_kept_as_saved(tmp_path, bucket, redis):
     assert (wroot / "17/README.md").read_text() == "a route wrote meanwhile"
 
 
+class _GatewayEdge:
+    """The gateway in front of agent-api's store routes: like every non-MCP route, `/agent/*` reads
+    the caller's key from `X-API-Key` only (`_authorize`), and refuses a request without one."""
+
+    def __init__(self, upstream, token: str) -> None:
+        self.upstream, self.token = upstream, token
+        self.seen: list[str] = []
+
+    def __call__(self, req, timeout=None):
+        import io
+        import urllib.error
+
+        self.seen.append(req.full_url)
+        if req.get_header("X-api-key") != self.token:
+            raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {},
+                                         io.BytesIO(b'{"detail": "Missing API key"}'))
+        return self.upstream(req, timeout=timeout)
+
+
+def test_a_worker_hydrates_and_pushes_through_the_gateway_with_its_token_as_x_api_key(tmp_path, bucket, redis):
+    pod = new_pod(tmp_path, bucket, redis, "agent-api")
+    make_repo(pod.path("_global"), {"README.md": "global"})
+    publish(pod, "_global")
+    edge = _GatewayEdge(_FakeAgentApi(pod), "vxd_dispatch.token.sig")
+    wroot = tmp_path / "worker-pod"
+    mount = {"path": "/workspaces/_global", "write": True}
+    cache = WorkerCache(StoreClient("http://gw/agent/workspace-store", lambda: "vxd_dispatch.token.sig",
+                                    opener=edge), [mount])
+    cache.mounts = {str(wroot / "_global"): mount}
+    assert cache.hydrate() == 1
+    assert (wroot / "_global/README.md").read_text() == "global"
+    gitexec.set_ref_observer(cache)
+    (wroot / "_global/kg.md").write_text("from the turn")
+    gitexec.run_git(str(wroot / "_global"), "add", "-A", check=True)
+    gitexec.run_git(str(wroot / "_global"), *AUTHOR, "commit", "-q", "-m", "turn", check=True)
+    gitexec.set_ref_observer(None)
+    assert pod.latest("_global").gen == 2
+    assert [u.split("?")[0] for u in edge.seen] == ["http://gw/agent/workspace-store/fetch",
+                                                    "http://gw/agent/workspace-store/push"]
+
+
+def test_the_gateway_edge_stub_refuses_a_bearer_only_request(tmp_path, bucket, redis):
+    import urllib.error
+    import urllib.request
+
+    pod = new_pod(tmp_path, bucket, redis, "agent-api")
+    make_repo(pod.path("_global"), {"README.md": "global"})
+    publish(pod, "_global")
+    edge = _GatewayEdge(_FakeAgentApi(pod), "vxd_dispatch.token.sig")
+    req = urllib.request.Request("http://gw/agent/workspace-store/fetch?path=/workspaces/_global",
+                                 headers={"authorization": "Bearer vxd_dispatch.token.sig"})
+    with pytest.raises(urllib.error.HTTPError) as refused:
+        edge(req)
+    assert refused.value.code == 401 and b"Missing API key" in refused.value.read()
+
+
 # ── boot: self-test and configuration ──────────────────────────────────────────────────────────
 def test_the_self_test_reports_conditional_put_and_fails_loud_on_a_dead_bucket():
     assert self_test(MemoryObjects(conditional=True)).conditional_put is True

@@ -10,7 +10,8 @@ un-commits locally (``reset --soft`` to the durable base) and raises :class:`Wor
     POST <store>/push?path=<mount path>&base=<sha>      ← a git bundle of base..HEAD
 
 ``<store>`` is ``VEXA_WORKSPACE_STORE_URL`` (an http(s) URL — the gateway's ``/agent/workspace-store``);
-the bearer is the dispatch's delegation token.
+the dispatch's delegation token rides ``X-API-Key``, the header the gateway reads on every route but
+``/mcp`` (only the MCP transport carries it as ``Authorization: Bearer``).
 """
 from __future__ import annotations
 
@@ -51,7 +52,7 @@ class StoreClient:
     def _req(self, method: str, op: str, params: dict, body: Optional[bytes] = None):
         url = f"{self.base}/{op}?{urllib.parse.urlencode(params)}"
         req = urllib.request.Request(url, data=body, method=method, headers={
-            "authorization": f"Bearer {self.token()}", "content-type": "application/octet-stream"})
+            "x-api-key": self.token(), "content-type": "application/octet-stream"})
         try:
             with self._open(req, timeout=self.timeout) as r:
                 return r.status, r.read()
