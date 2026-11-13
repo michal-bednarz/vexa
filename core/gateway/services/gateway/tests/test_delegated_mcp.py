@@ -14,6 +14,7 @@ rows), and nothing else a worker sends with its token is.
 from fastapi.testclient import TestClient
 
 from gateway import create_app, identity_token
+from gateway import taint as taint_mod
 from conftest import (AGENT_CARRIED, SIGNING_KEY, VERIFY_KEY, FakeAuthorizer, FakeDownstream,
                       FakeRedis, VALID_KEY)
 
@@ -224,6 +225,41 @@ def test_the_worker_harness_files_friction_with_its_token_and_that_is_the_only_r
     for method, path in (("GET", "/agent/friction"), ("POST", "/agent/friction/x"),
                          ("POST", "/agent/frictions"), ("DELETE", "/agent/friction")):
         assert client.request(method, path, headers={"X-API-Key": DELEGATED}).status_code == 403, path
+
+
+def test_the_worker_hydrates_and_pushes_its_workspaces_with_its_token():
+    """`workspaces/store/client.py` fetches and pushes a dispatch's mounts through
+    `/agent/workspace-store/*` with the dispatch's token in `X-API-Key`; agent-api grants the mounts
+    by the unit and subject the edge stamps. `Authorization: Bearer` is the MCP transport's carrier
+    and is read on `/mcp` only — on this route it is no key at all."""
+    if not AGENT_CARRIED:
+        return
+    user = {**DELEGATED_USER, "delegation": {**DELEGATED_USER["delegation"], "unit": "agent-42-chat-s1"}}
+    downstream = FakeDownstream(extra_headers={taint_mod.LABEL_HEADER: "none"})
+    client = TestClient(create_app(FakeAuthorizer(user=user, valid_key=DELEGATED), downstream, FakeRedis(),
+                                   identity_key=SIGNING_KEY))
+    r = client.get("/agent/workspace-store/fetch", params={"path": "/workspaces/_global"},
+                   headers={"X-API-Key": DELEGATED})
+    assert r.status_code == 200
+    assert downstream.last["url"] == "http://agent-api/api/workspace-store/fetch"
+    assert downstream.last["params"] == {"path": "/workspaces/_global"}
+    fwd = downstream.last["headers"]
+    assert identity_token.verify(VERIFY_KEY, fwd[identity_token.HEADER])["sub"] == "42"
+    assert fwd["x-user-id"] == "42" and fwd["x-user-delegation-unit"] == "agent-42-chat-s1"
+
+    r = client.post("/agent/workspace-store/push", params={"path": "/workspaces/_global", "base": "abc"},
+                    headers={"X-API-Key": DELEGATED, "content-type": "application/octet-stream"},
+                    content=b"bundle")
+    assert r.status_code == 200
+    assert downstream.last["url"] == "http://agent-api/api/workspace-store/push"
+    assert downstream.last["content"] == b"bundle"
+
+    downstream.last = None
+    r = client.get("/agent/workspace-store/fetch", params={"path": "/workspaces/_global"},
+                   headers={"Authorization": f"Bearer {DELEGATED}"})
+    assert r.status_code == 401
+    assert r.json() == {"detail": "Missing API key"}
+    assert downstream.last is None
 
 
 def test_auth_me_says_whether_the_key_is_the_instance_admins():
